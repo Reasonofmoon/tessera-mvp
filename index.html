@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TESSERA — 조각이 모여, 설계가 완성된다</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header id="topbar">
+  <div class="brand">
+    <div class="logo" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+    <div class="brand-text">
+      <span class="brand-name">TESSERA</span>
+      <span class="brand-tag">조각이 모여, 설계가 완성된다</span>
+    </div>
+  </div>
+  <div class="topbar-center">
+    <input id="project-name" type="text" value="Untitled Study" aria-label="프로젝트 이름">
+  </div>
+  <div class="topbar-right">
+    <div class="credit-chip" id="credit-chip" title="남은 크레딧">
+      <span class="credit-dot"></span>
+      <span id="credit-balance">300</span><span class="credit-unit">c</span>
+    </div>
+    <button id="btn-new" class="btn ghost" title="새 프로젝트">새 프로젝트</button>
+    <button id="btn-export" class="btn ghost" title="JSON 내보내기">내보내기</button>
+    <button id="btn-import" class="btn ghost" title="JSON 가져오기">가져오기</button>
+    <input type="file" id="file-import" accept=".json" hidden>
+  </div>
+</header>
+
+<main id="workspace">
+  <aside id="palette">
+    <h2 class="panel-title">TILES</h2>
+    <p class="palette-hint">타일을 클릭해 캔버스에 추가하고,<br>출력 포트 → 입력 포트로 연결하세요.</p>
+    <button class="tile-btn" data-tile="GROUND">
+      <span class="tile-glyph g-ground">▦</span>
+      <span class="tile-meta"><b>GROUND</b><i>대지 · 법규 브리핑</i></span>
+    </button>
+    <button class="tile-btn" data-tile="FLOOR">
+      <span class="tile-glyph g-floor">▥</span>
+      <span class="tile-meta"><b>FLOOR</b><i>파라메트릭 평면</i></span>
+    </button>
+    <button class="tile-btn" data-tile="MASS">
+      <span class="tile-glyph g-mass">◨</span>
+      <span class="tile-meta"><b>MASS</b><i>3D 매스 스터디</i></span>
+    </button>
+    <button class="tile-btn" data-tile="LENS">
+      <span class="tile-glyph g-lens">◎</span>
+      <span class="tile-meta"><b>LENS</b><i>카메라 렌더</i></span>
+    </button>
+    <button class="tile-btn" data-tile="CUT">
+      <span class="tile-glyph g-cut">☰</span>
+      <span class="tile-meta"><b>CUT</b><i>입면 · 단면 생성</i></span>
+    </button>
+    <button class="tile-btn" data-tile="FOLIO">
+      <span class="tile-glyph g-folio">▣</span>
+      <span class="tile-meta"><b>FOLIO</b><i>보드 · 리포트 조판</i></span>
+    </button>
+    <div class="palette-foot">
+      <p>FLOW</p>
+      <code>GROUND → FLOOR → MASS → LENS / CUT → FOLIO</code>
+    </div>
+  </aside>
+
+  <section id="canvas-wrap">
+    <svg id="edges-layer"></svg>
+    <div id="nodes-layer"></div>
+    <div id="canvas-hint" class="canvas-hint">
+      왼쪽에서 타일을 추가해 흐름을 시작하세요.<br>
+      <span>빈 공간 드래그 = 이동 · 휠 = 확대/축소</span>
+    </div>
+    <div id="zoom-controls">
+      <button id="zoom-out" title="축소">−</button>
+      <span id="zoom-level">100%</span>
+      <button id="zoom-in" title="확대">+</button>
+      <button id="zoom-fit" title="전체 보기">⤢</button>
+    </div>
+  </section>
+
+  <aside id="inspector">
+    <h2 class="panel-title">INSPECTOR</h2>
+    <div id="inspector-empty" class="inspector-empty">
+      캔버스에서 타일을 선택하면<br>패널이 열립니다.
+    </div>
+    <div id="inspector-body" hidden></div>
+  </aside>
+
+  <section id="dock">
+    <div class="dock-tabs">
+      <button class="dock-tab active" data-tab="versions">VERSIONS <span id="ver-count" class="count">0</span></button>
+      <button class="dock-tab" data-tab="ledger">LEDGER <span id="ledger-count" class="count">0</span></button>
+    </div>
+    <div class="dock-body">
+      <div id="dock-versions" class="dock-pane active">
+        <p class="dock-hint">모든 생성은 버전으로 기록됩니다. 되돌리기로 파라미터를 복원하세요.</p>
+        <ul id="version-list" class="version-list"></ul>
+      </div>
+      <div id="dock-ledger" class="dock-pane">
+        <p class="dock-hint">실행 전 예상 크레딧, 실행 후 소비 내역이 투명하게 기록됩니다.</p>
+        <ul id="ledger-list" class="ledger-list"></ul>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer id="statusbar">
+  <span id="status-msg">준비</span>
+  <span class="status-right">TESSERA MVP · 로컬 우선 · 데이터는 브라우저에 저장됩니다</span>
+</footer>
+
+<template id="tpl-credits-preview"></template>
+<script src="app.js"></script>
+</body>
+</html>
