@@ -50,6 +50,18 @@ function toast(msg, isErr = false) {
 }
 function status(msg) { $('#status-msg').textContent = msg; }
 
+/* ---------------- settings (Phase 2) ---------------- */
+
+const SET_KEY = 'tessera-settings-v1';
+let Settings = { vworldKey: '', geminiKey: '', name: '', color: '', siteId: '' };
+try {
+  const rawS = localStorage.getItem(SET_KEY);
+  if (rawS) Settings = Object.assign(Settings, JSON.parse(rawS));
+} catch (e) {}
+function saveSettings() {
+  try { localStorage.setItem(SET_KEY, JSON.stringify(Settings)); } catch (e) {}
+}
+
 /* ---------------- tile registry ---------------- */
 
 const ZONES = [
@@ -69,32 +81,59 @@ const TILES = {
     name: 'GROUND', label: '대지 · 법규 브리핑', glyph: '▦', color: 'g-ground',
     credits: 5, accent: '#5F7A5A',
     defaultParams: () => ({ address: '서울 강남구 논현동 213-12' }),
-    run(params) {
-      const rnd = mulberry32(strHash(params.address || 'x'));
-      const z = ZONES[Math.floor(rnd() * ZONES.length)];
-      const area = Math.round((300 + rnd() * 900) / 10) * 10;       // m2
-      const road = 4 + Math.floor(rnd() * 3) * 2;                    // m
-      const cites = [...LAW_CITES].sort(() => rnd() - .5).slice(0, 3);
-      return {
-        type: 'siteData',
-        zone: z.zone,
-        siteArea: area,
-        coverageLimit: z.coverage,
-        floorLimit: z.floor,
-        maxFootprint: Math.round(area * z.coverage),
-        maxGFA: Math.round(area * z.floor),
-        roadWidth: road,
-        parkingPer: 65 + Math.floor(rnd() * 4) * 5, // m2/대
-        cites,
-        summary: `${z.zone} · ${fmt(area)}m²`,
-      };
+    /* Phase 2: VWorld 실연동(키 있을 때) → 실패 시 결정론적 목업 폴백 */
+    async run(params) {
+      let live = null, liveErr = null;
+      if (Settings.vworldKey) {
+        try { live = await VW.briefing(params.address, Settings.vworldKey); }
+        catch (e) { liveErr = e; }
+      }
+      const limits = Law.limitsFor(live ? live.zone : '');
+      let out;
+      if (live) {
+        out = Object.assign({ source: 'live' }, live, {
+          coverageLimit: limits.coverage,
+          floorLimit: limits.floor,
+          maxFootprint: Math.round(live.siteArea * limits.coverage),
+          maxGFA: Math.round(live.siteArea * limits.floor),
+          parkingPer: 70,
+          summary: `${live.zone} · ${fmt(live.siteArea)}m² (VWorld LIVE)`,
+        });
+      } else {
+        const rnd = mulberry32(strHash(params.address || 'x'));
+        const z = ZONES[Math.floor(rnd() * ZONES.length)];
+        const area = Math.round((300 + rnd() * 900) / 10) * 10;
+        const road = 4 + Math.floor(rnd() * 3) * 2;
+        const cites = [...LAW_CITES].sort(() => rnd() - .5).slice(0, 3);
+        out = {
+          source: 'mock', zone: z.zone, siteArea: area,
+          coverageLimit: z.coverage, floorLimit: z.floor,
+          maxFootprint: Math.round(area * z.coverage),
+          maxGFA: Math.round(area * z.floor),
+          roadWidth: road, parkingPer: 65 + Math.floor(rnd() * 4) * 5,
+          cites, parcel: null, apiTime: new Date().toISOString(),
+          fallbackReason: liveErr ? String(liveErr.message || liveErr) : 'no-key',
+          summary: `${z.zone} · ${fmt(area)}m²`,
+        };
+      }
+      /* 법규 RAG: 상황에 맞는 조문 검색 */
+      const q = `${out.zone} 건폐율 용적률 최대한도 대지면적 조례`;
+      out.laws = Law.retrieve(q, 3);
+      if (!out.cites) {
+        out.cites = out.laws.map(l => `${l.law.replace(/의 계획 및 이용에 관한 법률/, '계획법')} ${l.article.replace(/제/, '').replace(/조제/, '§')}`);
+      }
+      return out;
     },
     body(out) {
-      return out
-        ? `<div class="out-label">▸ ${out.zone}</div>
-           <div class="out-label">대지 ${fmt(out.siteArea)}m² · 도로 ${out.roadWidth}m</div>
-           <div class="out-label">한도 건폐 ${Math.round(out.coverageLimit*100)}% / 용적 ${out.floorLimit.toFixed(1)}</div>`
-        : `<div class="empty">주소를 입력하고 브리핑을 생성하세요.</div>`;
+      if (!out) return `<div class="empty">주소를 입력하고 브리핑을 생성하세요.</div>`;
+      const badge = out.source === 'live'
+        ? `<span class="src-badge live">VWORLD LIVE</span>`
+        : `<span class="src-badge mock">MOCK${out.fallbackReason && out.fallbackReason !== 'no-key' ? ' · API 실패' : ''}</span>`;
+      const road = out.roadWidth ? ` · 도로 ${out.roadWidth}m` : (out.parcel ? ` · PNU …${out.parcel.pnu.slice(-6)}` : '');
+      return `<div style="margin-bottom:4px">${badge}</div>
+           <div class="out-label">▸ ${out.zone}</div>
+           <div class="out-label">대지 ${fmt(out.siteArea)}m²${road}</div>
+           <div class="out-label">한도 건폐 ${Math.round(out.coverageLimit * 100)}% / 용적 ${out.floorLimit.toFixed(1)}</div>`;
     },
   },
 
@@ -208,8 +247,10 @@ function freshState() {
     credits: 300,
     nodes: [],      // {id, tile, x, y, params, out, rev}
     edges: [],      // {id, from, to}
-    versions: [],   // {hash, parent, tile, msg, params, nodeId, ts}
-    ledger: [],     // {ts, tile, action, cost, balance}
+    versions: [],   // {hash, parent, tile, msg, params, nodeId, ts, _l}
+    ledger: [],     // {ts, tile, action, cost, balance} — 사이트 로컬
+    comments: [],   // {id, nodeId, author, color, text, ts:{s,l}, tomb}
+    tombs: { nodes: {}, edges: {} },
     view: { x: 0, y: 0, scale: 1 },
     seq: 0,
   };
@@ -221,24 +262,32 @@ function save() {
 function load() {
   try {
     const raw = localStorage.getItem(LS_KEY);
-    if (raw) { const s = JSON.parse(raw); if (s && s.nodes) return s; }
+    if (raw) {
+      const s = JSON.parse(raw);
+      if (s && s.nodes) {
+        // v0.1 → v0.2 마이그레이션
+        if (!s.comments) s.comments = [];
+        if (!s.tombs) s.tombs = { nodes: {}, edges: {} };
+        return s;
+      }
+    }
   } catch (e) {}
   return null;
 }
 
-/* seed demo: GROUND → FLOOR → MASS → LENS ready to explore */
+/* seed demo: GROUND → FLOOR → MASS → LENS ready to explore
+   (결정론적 ID — 새 피어 탭과 동일 시드로 수렴) */
 function seedDemo() {
   const s = freshState();
-  const mk = (tile, x, y) => {
-    const id = uid(tile[0]);
+  const mk = (tile, id, x, y) => {
     s.nodes.push({ id, tile, x, y, params: TILES[tile].defaultParams(), out: null, rev: 0 });
     return id;
   };
-  const g = mk('GROUND', 60, 80);
-  const f = mk('FLOOR', 330, 80);
-  const m = mk('MASS', 600, 80);
-  const l = mk('LENS', 600, 290);
-  s.edges.push({ id: uid('e'), from: g, to: f }, { id: uid('e'), from: f, to: m }, { id: uid('e'), from: m, to: l });
+  const g = mk('GROUND', 'G01', 60, 80);
+  const f = mk('FLOOR', 'F02', 330, 80);
+  const m = mk('MASS', 'M03', 600, 80);
+  const l = mk('LENS', 'L04', 600, 290);
+  s.edges.push({ id: 'e01', from: g, to: f }, { id: 'e02', from: f, to: m }, { id: 'e03', from: m, to: l });
   return s;
 }
 
@@ -287,10 +336,15 @@ function renderAll() {
 
 function renderNodes() {
   $$('.node', nodesLayer).forEach(n => n.remove());
+  const peerSel = {};
+  for (const p of Collab.peerList()) if (p.sel) peerSel[p.sel] = p;
   for (const node of S.nodes) {
     const T = TILES[node.tile];
-    const card = el('div', 'node' + (node.id === selectedId ? ' selected' : '') + (isStale(node) ? ' stale' : ''));
+    const cmtCount = (S.comments || []).filter(c => c.nodeId === node.id && !c.tomb).length;
+    const peer = peerSel[node.id];
+    const card = el('div', 'node' + (node.id === selectedId ? ' selected' : '') + (isStale(node) ? ' stale' : '') + (peer ? ' remote-sel' : ''));
     card.dataset.id = node.id;
+    if (peer) { card.dataset.peer = peer.name; card.style.setProperty('--rc', peer.color); }
     card.style.left = node.x + 'px';
     card.style.top = node.y + 'px';
     card.innerHTML = `
@@ -300,6 +354,7 @@ function renderNodes() {
         <span class="node-id">${node.id.split('#')[0]}</span>
       </div>
       <div class="node-body">${T.body(node.out)}</div>
+      ${cmtCount ? `<span class="c-badge" title="댓글 ${cmtCount}">💬${cmtCount}</span>` : ''}
       <div class="port in" data-port="in" title="입력"></div>
       <div class="port out" data-port="out" title="출력"></div>`;
     nodesLayer.appendChild(card);
@@ -378,7 +433,14 @@ function renderInspector() {
 
   if (node.tile === 'GROUND') {
     runLabel = '브리핑 생성';
-    form.innerHTML = field('대지 주소', `<input type="text" id="inp-address" value="${P.address}" placeholder="지번 또는 도로명 주소">`);
+    const apiState = Settings.vworldKey
+      ? `<p class="set-help">VWORLD 키 설정됨 — 실제 공간정보로 조사합니다.</p>`
+      : `<p class="set-help">VWORLD 키 없음 — 결정론적 목업으로 동작 (⚙ 설정에서 키 등록 가능)</p>`;
+    form.innerHTML = field('대지 주소', `<input type="text" id="inp-address" value="${P.address}" placeholder="지번 또는 도로명 주소">`) + apiState;
+    $('#inp-address')?.addEventListener('input', e => {
+      P.address = e.target.value; save();
+      Collab.nodeFields(node.id, { params: JSON.parse(JSON.stringify(P)) });
+    });
   }
 
   if (node.tile === 'FLOOR') {
@@ -404,7 +466,10 @@ function renderInspector() {
     bindRange('inp-floors', 'F');
     bindRange('inp-fh', 'm');
     bindRange('inp-ratio', '%');
-    $('#inp-use')?.addEventListener('input', e => { P.use = e.target.value; save(); });
+    $('#inp-use')?.addEventListener('input', e => {
+      P.use = e.target.value; save();
+      Collab.nodeFields(node.id, { params: JSON.parse(JSON.stringify(P)) });
+    });
     // live compliance preview
     if (site) renderLiveCompliance(form, P, site);
   }
@@ -417,7 +482,10 @@ function renderInspector() {
         <input type="checkbox" id="inp-stepback" ${P.stepback ? 'checked' : ''}> 상부층 후退 처리</label></div>` +
       field('후退 깊이', rangeRow('inp-setback', P.setback, 0, 6, 0.5, 'm'));
     bindRange('inp-setback', 'm');
-    $('#inp-stepback')?.addEventListener('change', e => { P.stepback = e.target.checked; save(); });
+    $('#inp-stepback')?.addEventListener('change', e => {
+      P.stepback = e.target.checked; save();
+      Collab.nodeFields(node.id, { params: JSON.parse(JSON.stringify(P)) });
+    });
   }
 
   if (node.tile === 'LENS') {
@@ -432,7 +500,10 @@ function renderInspector() {
     bindRange('inp-az', '°');
     bindRange('inp-ch', 'm');
     bindRange('inp-hour', '시');
-    $('#inp-lens')?.addEventListener('change', e => { P.lens = +e.target.value; save(); });
+    $('#inp-lens')?.addEventListener('change', e => {
+      P.lens = +e.target.value; save();
+      Collab.nodeFields(node.id, { params: JSON.parse(JSON.stringify(P)) });
+    });
   }
 
   if (node.tile === 'CUT') {
@@ -444,8 +515,14 @@ function renderInspector() {
       field('축척', `<select id="inp-scale">
         ${['1:100', '1:200', '1:300', '1:500'].map(k => `<option ${k === P.scale ? 'selected' : ''}>${k}</option>`).join('')}
       </select>`);
-    $('#inp-kind')?.addEventListener('change', e => { P.kind = e.target.value; save(); });
-    $('#inp-scale')?.addEventListener('change', e => { P.scale = e.target.value; save(); });
+    $('#inp-kind')?.addEventListener('change', e => {
+      P.kind = e.target.value; save();
+      Collab.nodeFields(node.id, { params: JSON.parse(JSON.stringify(P)) });
+    });
+    $('#inp-scale')?.addEventListener('change', e => {
+      P.scale = e.target.value; save();
+      Collab.nodeFields(node.id, { params: JSON.parse(JSON.stringify(P)) });
+    });
   }
 
   if (node.tile === 'FOLIO') {
@@ -455,8 +532,14 @@ function renderInspector() {
       field('스타일', `<select id="inp-style">
         ${['Tessera Ivory', 'Ink Monochrome', 'Terracotta Accent'].map(k => `<option ${k === P.boardStyle ? 'selected' : ''}>${k}</option>`).join('')}
       </select>`);
-    $('#inp-title')?.addEventListener('input', e => { P.boardTitle = e.target.value; save(); });
-    $('#inp-style')?.addEventListener('change', e => { P.boardStyle = e.target.value; save(); });
+    $('#inp-title')?.addEventListener('input', e => {
+      P.boardTitle = e.target.value; save();
+      Collab.nodeFields(node.id, { params: JSON.parse(JSON.stringify(P)) });
+    });
+    $('#inp-style')?.addEventListener('change', e => {
+      P.boardStyle = e.target.value; save();
+      Collab.nodeFields(node.id, { params: JSON.parse(JSON.stringify(P)) });
+    });
   }
 
   body.appendChild(form);
@@ -472,7 +555,49 @@ function renderInspector() {
 
   // result visual
   if (node.out) body.appendChild(resultVisual(node, ups));
+
+  // comments (CRDT 동기화)
+  body.appendChild(commentsSectionHTML(node));
 }
+
+function commentsSectionHTML(node) {
+  const wrap = el('div', 'comments-sec');
+  const list = (S.comments || []).filter(c => c.nodeId === node.id && !c.tomb)
+    .sort((a, b) => ((a.ts && a.ts.l) || 0) - ((b.ts && b.ts.l) || 0));
+  wrap.innerHTML = `<h4>COMMENTS · ${list.length}</h4>` +
+    list.map(c => `
+      <div class="comment-item" data-cid="${c.id}">
+        <i class="c-dot" style="background:${c.color || '#8A8272'}"></i>
+        <div><div class="c-meta">${esc(c.author || '익명')} · ${c.tsStr || ''}</div><div>${esc(c.text)}</div></div>
+        <button class="c-del" title="삭제">✕</button>
+      </div>`).join('') +
+    `<div class="comment-form">
+      <input type="text" id="cmt-input" placeholder="이 타일에 댓글 달기…" maxlength="200">
+      <button class="btn primary" id="cmt-add">등록</button>
+    </div>`;
+  $('#cmt-add', wrap)?.addEventListener('click', () => {
+    const inp = $('#cmt-input', wrap);
+    const text = inp.value.trim();
+    if (!text) return;
+    const me = Collab.mySite();
+    const c = { id: 'c' + Math.random().toString(36).slice(2, 9), nodeId: node.id, author: me.name, color: me.color, text, tsStr: now() };
+    S.comments.push(c);
+    Collab.commentAdd(c);
+    inp.value = '';
+    renderNodes(); renderInspector(); save();
+    toast('댓글 등록 — 피어 탭에 동기화됩니다');
+  });
+  $('#cmt-input', wrap)?.addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#cmt-add', wrap).click(); });
+  $$('.c-del', wrap).forEach(b => b.addEventListener('click', () => {
+    const cid = b.closest('.comment-item').dataset.cid;
+    Collab.commentRemove(cid);
+    S.comments = S.comments.map(c => c.id === cid ? { ...c, tomb: true } : c);
+    renderNodes(); renderInspector(); save();
+  }));
+  return wrap;
+}
+
+function esc(s) { return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
 
 function bindRange(id, unit) {
   const r = $('#' + id);
@@ -493,6 +618,7 @@ function bindRange(id, unit) {
         if (site) renderLiveCompliance($('#inspector-body'), node.params, site);
       }
       save();
+      Collab.nodeFields(node.id, { params: JSON.parse(JSON.stringify(node.params)) });
     }
   });
 }
@@ -521,17 +647,22 @@ function resultVisual(node, ups) {
   const o = node.out;
 
   if (node.tile === 'GROUND') {
-    wrap.innerHTML = resultCard('SITE BRIEFING', kvRows([
-        ['대지면적', `${fmt(o.siteArea)} m²`],
-        ['용도지역', o.zone],
+    const badge = o.source === 'live'
+      ? `<span class="src-badge live">VWORLD LIVE · ${new Date(o.apiTime).toLocaleTimeString('ko-KR')}</span>`
+      : `<span class="src-badge mock">MOCK${o.fallbackReason && o.fallbackReason !== 'no-key' ? ' — ' + esc(String(o.fallbackReason)) : ''}</span>`;
+    wrap.innerHTML = resultCard('SITE BRIEFING ' + badge, kvRows([
+        ['대지면적', `${fmt(o.siteArea)} m²${o.parcel ? ' (지적 도형 산출)' : ''}`],
+        ['용도지역', esc(o.zone), o.source === 'live' ? 'ok' : ''],
         ['법정 건폐율', Math.round(o.coverageLimit * 100) + '%'],
         ['법정 용적률', o.floorLimit.toFixed(1)],
         ['최대 건축면적', `${fmt(o.maxFootprint)} m²`, 'ok'],
         ['최대 연면적', `${fmt(o.maxGFA)} m²`, 'ok'],
-        ['접면 도로', `${o.roadWidth} m`],
+        ['접면 도로', o.roadWidth ? `${o.roadWidth} m` : '(지적 도형에 없음)'],
         ['주차기준', `${o.parkingPer} m²/대`],
-      ]) + `<div class="rc-body" style="padding-top:4px">${o.cites.map(c => `<span class="cite">${c}</span>`).join('')}</div>
-      <div class="rc-body" style="font-size:10px;color:var(--ink-faint)">※ MVP 결정론적 목업 · 실서비스는 공공 API + 법규 RAG</div>`);
+      ])) +
+      (o.parcel ? parcelMapHTML(o) : '');
+    const lawEl = lawHitsHTML(o, node);
+    if (lawEl) wrap.appendChild(lawEl);
   }
 
   if (node.tile === 'FLOOR') {
@@ -567,6 +698,76 @@ function resultVisual(node, ups) {
 }
 
 /* deterministic visuals */
+
+/* Phase 2: 지적 미니맵 (VWorld 폴리곤) */
+function parcelMapHTML(out) {
+  const ring = (out.parcel && out.parcel.ring) || [];
+  if (ring.length < 3) return '';
+  const xs = ring.map(c => c[0]), ys = ring.map(c => c[1]);
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const W = 240, H = 150, pad = 16;
+  const sx = (W - pad * 2) / (maxX - minX || 1e-9);
+  const sy = (H - pad * 2) / (maxY - minY || 1e-9);
+  const sc = Math.min(sx, sy);
+  const ox = (W - (maxX - minX) * sc) / 2, oy = (H - (maxY - minY) * sc) / 2;
+  // 위도 클수록 화면 위 → y 반전
+  const pts = ring.map(c => `${(ox + (c[0] - minX) * sc).toFixed(1)},${(oy + (maxY - c[1]) * sc).toFixed(1)}`).join(' ');
+  const cx = ox + (out.parcel.center.x - minX) * sc, cy = oy + (maxY - out.parcel.center.y) * sc;
+  return `<div class="parcel-map">
+    <svg viewBox="0 0 ${W} ${H}">
+      <defs><pattern id="hatch" width="6" height="6" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+        <line x1="0" y1="0" x2="0" y2="6" stroke="#D8D0BE" stroke-width="1"/></pattern></defs>
+      <rect width="${W}" height="${H}" fill="#FBF8F1"/>
+      <rect width="${W}" height="${H}" fill="url(#hatch)" opacity=".5"/>
+      <polygon points="${pts}" fill="rgba(200,85,44,.18)" stroke="#1A1815" stroke-width="1.6"/>
+      <circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="2.4" fill="#C8552C"/>
+      <text x="${Math.min(W - 60, cx + 6).toFixed(0)}" y="${Math.max(10, cy - 5).toFixed(0)}" font-size="8" font-family="monospace" fill="#4A443C">${esc(out.parcel.jibun || '')}</text>
+    </svg>
+    <div class="pm-cap"><span>PNU ${esc(out.parcel.pnu || '')}</span><span>연속지적도 LP_PA_CBND_BUBUN</span></div>
+    <span class="north">N ↑</span>
+  </div>`;
+}
+
+/* Phase 2: 법령 RAG 결과 + (선택) Gemini 요약 */
+function lawHitsHTML(out, node) {
+  const hits = out.laws || [];
+  if (!hits.length) return '';
+  const hasGemini = !!Settings.geminiKey;
+  let html = `<div class="result-card"><div class="rc-head">법규 RAG · 관련 조문 TOP ${hits.length}</div><div style="padding:10px">` +
+    hits.map(h => `<div class="law-hit">
+      <div class="lh-head"><b>${esc(h.law)}</b><span>${esc(h.article)}</span>
+        ${h.verbatim ? '<span class="lh-verbatim-tag">원문</span>' : '<span class="lh-verbatim-tag" style="color:var(--ink-faint);border-color:var(--line)">요약</span>'}
+        <span class="lh-score">${h.score.toFixed(2)}</span></div>
+      <div class="lh-text${h.verbatim ? ' verbatim' : ''}">${esc(h.text)}</div>
+    </div>`).join('') +
+    `<div class="run-row" style="margin-top:10px">
+      <button class="btn ${hasGemini ? 'primary' : ''}" id="law-ai" ${hasGemini ? '' : 'disabled title="⚙ 설정에서 Gemini API 키를 등록하세요"'}>${hasGemini ? 'AI 요약 생성 (Gemini)' : 'AI 요약 — Gemini 키 필요'}</button>
+    </div>
+    <div id="law-ai-out"></div>
+    <p style="font-size:9.5px;color:var(--ink-faint);margin-top:6px">BM25 로컬 검색 · 세부 한도는 시행령·조례 확인 필요</p>
+  </div></div>`;
+  const wrap = el('div');
+  wrap.innerHTML = html;
+  $('#law-ai', wrap)?.addEventListener('click', async () => {
+    const btn2 = $('#law-ai', wrap);
+    btn2.classList.add('busy'); btn2.textContent = '요약 생성 중…';
+    try {
+      const q = `${out.zone} 지역 대지 ${fmt(out.siteArea)}m², 건폐율·용적률 한도와 최대 허용 규모는?`;
+      const summary = await Law.synthesize(q, out.laws, Settings.geminiKey);
+      $('#law-ai-out', wrap).innerHTML = `<div class="ai-summary">
+        <div class="as-head"><span>AI SUMMARY · gemini-2.0-flash</span></div>
+        <div class="as-body">${esc(summary).replace(/\n/g, '<br>')}</div>
+        <p style="font-size:9px;color:var(--terra-deep);margin-top:6px">근거 조문만 사용 · 최종 판단은 전문가 검토 필수</p>
+      </div>`;
+      node._ai = summary;
+    } catch (e) {
+      toast('Gemini 오류: ' + e.message, true);
+    } finally {
+      btn2.classList.remove('busy'); btn2.textContent = 'AI 요약 생성 (Gemini)';
+    }
+  });
+  return wrap;
+}
 
 function miniMassHTML(node) {
   const P = node.params;
@@ -697,7 +898,7 @@ function canRun(node, ups) {
   return T.needs.some(t => ups[t]);
 }
 
-function runNode(nodeId) {
+async function runNode(nodeId) {
   const node = nodeById(nodeId);
   if (!node) return;
   const T = TILES[node.tile];
@@ -706,18 +907,29 @@ function runNode(nodeId) {
   if (!canRun(node, ups)) { toast(`${T.needs.join(' 또는 ')} 타일을 먼저 연결·실행하세요.`, true); return; }
   if (S.credits < T.credits) { toast('크레딧이 부족합니다. 새 프로젝트를 시작하세요.', true); return; }
 
-  // cost
-  S.credits -= T.credits;
-  S.ledger.push({ ts: now(), tile: T.name, action: `${T.name} 실행`, cost: T.credits, balance: S.credits });
+  // 실행 중 UI 잠금(GROUND 라이브 조사는 수 초 소요)
+  const runBtn = $('#inspector-body .btn.primary');
+  if (runBtn) { runBtn.classList.add('busy'); runBtn.textContent = '실행 중…'; }
+  status(`${T.name} 실행 중…`);
 
-  // compute
   let out;
-  if (node.tile === 'FLOOR') {
-    out = T.run(node.params, ups.GROUND?.out);
-    if (out) { out.floorsRef = node.params.floors; out._floors = node.params.floors; }
-  } else {
-    out = T.run(node.params, ups);
+  try {
+    if (node.tile === 'FLOOR') {
+      out = T.run(node.params, ups.GROUND?.out);
+      if (out) { out.floorsRef = node.params.floors; out._floors = node.params.floors; }
+    } else {
+      out = await T.run(node.params, ups);
+    }
+  } finally {
+    if (runBtn) { runBtn.classList.remove('busy'); runBtn.textContent = '재실행 · ' + T.credits + 'c'; }
   }
+
+  // cost (성공 시에만)
+  if (out) {
+    S.credits -= T.credits;
+    S.ledger.push({ ts: now(), tile: T.name, action: `${T.name} 실행`, cost: T.credits, balance: S.credits });
+  }
+
   node.out = out;
   node.rev = (node.rev || 0) + 1;
   node._inRev = Math.max(0, ...edgesInto(node.id).map(e => nodeById(e.from)?.rev || 0));
@@ -726,17 +938,26 @@ function runNode(nodeId) {
   const parent = S.versions.length ? S.versions[S.versions.length - 1].hash : null;
   const hash = Math.random().toString(16).slice(2, 8);
   const msg = {
-    GROUND: `대지 브리핑 생성 — ${out?.zone || ''}`,
+    GROUND: out ? `대지 브리핑 생성 — ${out.zone}${out.source === 'live' ? ' (LIVE)' : ''}` : '브리핑 실패',
     FLOOR: out ? `평면 확정 — ${out.summary}${out.coverageOk && out.farOk ? ' (법규 적합)' : ' (한도 초과)'}` : '평면 실행 실패',
-    MASS: `매스 생성 — ${out?.summary || ''}`,
-    LENS: `렌더 생성 — ${out?.summary || ''}`,
-    CUT: `도면 생성 — ${out?.kind || ''} ${out?.scale || ''}`,
-    FOLIO: `보드 조판 — ${out?.parts?.join('+') || ''}`,
+    MASS: out ? `매스 생성 — ${out.summary}` : '매스 실패',
+    LENS: out ? `렌더 생성 — ${out.summary}` : '렌더 실패',
+    CUT: out ? `도면 생성 — ${out.kind} ${out.scale}` : '도면 실패',
+    FOLIO: out ? `보드 조판 — ${(out.parts || []).join('+')}` : '조판 실패',
   }[node.tile];
-  S.versions.push({ hash, parent, tile: T.name, msg, params: JSON.parse(JSON.stringify(node.params)), nodeId: node.id, ts: now() });
+  const ver = { hash, parent, tile: T.name, msg, params: JSON.parse(JSON.stringify(node.params)), nodeId: node.id, ts: now() };
+  ver._l = Date.now();
+  S.versions.push(ver);
 
-  status(`${T.name} 완료 · ${T.credits}c 차감`);
-  toast(`${T.name} ${msg.includes('실패') ? '실패' : '완료'} · ${T.credits}c`);
+  // CRDT 동기화: 결과 + 버전
+  Collab.nodeFields(node.id, { out: node.out, rev: node.rev });
+  Collab.versionAdd(JSON.parse(JSON.stringify(ver)));
+
+  status(out ? `${T.name} 완료 · ${T.credits}c 차감` : `${T.name} 실패`);
+  toast(out ? `${T.name} 완료 · ${T.credits}c` : `${T.name} 실패 — 조건을 확인하세요`, !out);
+  if (out && node.tile === 'GROUND' && out.source === 'mock' && out.fallbackReason && out.fallbackReason !== 'no-key') {
+    toast('VWorld 실패: ' + out.fallbackReason + ' → 목업 폴백', true);
+  }
   renderAll();
   renderInspector();
 }
@@ -801,6 +1022,7 @@ nodesLayer.addEventListener('mousedown', (e) => {
   }
   if (card) {
     selectedId = card.dataset.id;
+    Collab.selBroadcast(selectedId);
     drag = { type: 'node', id: card.dataset.id, dx: e.clientX / S.view.scale - nodeById(card.dataset.id).x, dy: e.clientY / S.view.scale - nodeById(card.dataset.id).y };
     renderNodes(); renderEdges(); renderInspector();
     e.preventDefault();
@@ -813,7 +1035,7 @@ canvasWrap.addEventListener('mousedown', (e) => {
   drag = { type: 'pan', sx: e.clientX, sy: e.clientY, ox: S.view.x, oy: S.view.y };
   canvasWrap.style.cursor = 'grabbing';
   // deselect
-  if (selectedId) { selectedId = null; renderNodes(); renderEdges(); renderInspector(); }
+  if (selectedId) { selectedId = null; Collab.selBroadcast(null); renderNodes(); renderEdges(); renderInspector(); }
 });
 
 window.addEventListener('mousemove', (e) => {
@@ -834,6 +1056,11 @@ window.addEventListener('mousemove', (e) => {
 
 window.addEventListener('mouseup', (e) => {
   if (!drag) return;
+  if (drag.type === 'node') {
+    // CRDT: 노드 위치 동기화
+    const moved = nodeById(drag.id);
+    if (moved) Collab.nodeFields(drag.id, { x: moved.x, y: moved.y });
+  }
   if (drag.type === 'connect') {
     $$('.port').forEach(p => p.classList.remove('active'));
     const target = document.elementFromPoint(e.clientX, e.clientY)?.closest('.port');
@@ -845,7 +1072,9 @@ window.addEventListener('mouseup', (e) => {
       else if (!T.needs || !T.needs.includes(fromNode.tile)) toast(`${toNode.tile}은(는) ${T.needs ? T.needs.join('/') : '직전'} 타일을 입력으로 받습니다.`, true);
       else if (S.edges.some(x => x.from === drag.from && x.to === toId)) toast('이미 연결되어 있습니다.', true);
       else {
-        S.edges.push({ id: uid('e'), from: drag.from, to: toId });
+        const edge = { id: uid('e'), from: drag.from, to: toId };
+        S.edges.push(edge);
+        Collab.edgeAdd(edge);
         toast(`${fromNode.tile} → ${toNode.tile} 연결`);
         status('연결 추가');
       }
@@ -869,6 +1098,7 @@ edgesLayer.addEventListener('click', (e) => {
   const p = e.target.closest('path.edge');
   if (!p) return;
   const id = p.dataset.edge;
+  Collab.edgeRemove(id);
   S.edges = S.edges.filter(x => x.id !== id);
   toast('연결 해제');
   renderAll(); renderInspector();
@@ -879,9 +1109,11 @@ edgesLayer.addEventListener('click', (e) => {
 window.addEventListener('keydown', (e) => {
   if (e.target.matches('input, select, textarea')) return;
   if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId) {
+    Collab.nodeRemove(selectedId);
     S.edges = S.edges.filter(x => x.from !== selectedId && x.to !== selectedId);
     S.nodes = S.nodes.filter(x => x.id !== selectedId);
     selectedId = null;
+    Collab.selBroadcast(null);
     toast('타일 삭제');
     renderAll(); renderInspector();
   }
@@ -893,8 +1125,11 @@ $$('#palette .tile-btn').forEach(b => b.addEventListener('click', () => {
   const id = uid(tile[0]);
   const cx = (-S.view.x + canvasWrap.clientWidth / 2) / S.view.scale - 95 + (Math.random() * 60 - 30);
   const cy = (-S.view.y + canvasWrap.clientHeight / 2) / S.view.scale - 40 + (Math.random() * 60 - 30);
-  S.nodes.push({ id, tile, x: Math.round(cx), y: Math.round(cy), params: TILES[tile].defaultParams(), out: null, rev: 0 });
+  const node = { id, tile, x: Math.round(cx), y: Math.round(cy), params: TILES[tile].defaultParams(), out: null, rev: 0 };
+  S.nodes.push(node);
+  Collab.nodeAdd(node);
   selectedId = id;
+  Collab.selBroadcast(id);
   renderAll(); renderInspector();
   toast(`${tile} 타일 추가됨`);
 }));
@@ -963,8 +1198,79 @@ $('#file-import').addEventListener('change', (e) => {
 
 /* ---------------- boot ---------------- */
 
+window.__TESSERA_STATE = () => S;  // collab.js apply용
+
+function renderPeers() {
+  const peers = Collab.peerList();
+  const me = Collab.mySite();
+  const chip = $('#peer-chip');
+  const total = peers.length + 1;
+  chip.hidden = false;
+  $('#peer-count').textContent = total;
+  $('#peer-dots').innerHTML =
+    `<i style="background:${me ? me.color : '#C8552C'}"></i>` +
+    peers.map(p => `<i style="background:${p.color}"></i>`).join('');
+  $('#peer-tab-count').textContent = total;
+  const selName = (id) => {
+    const n = id && nodeById(id);
+    return n ? `${n.id.split('#')[0]} 선택 중` : '대기';
+  };
+  $('#peer-list').innerHTML =
+    (me ? `<li class="me"><i class="dot" style="background:${me.color}"></i><span class="p-name">${esc(me.name)} (나)</span><span class="p-sel">${selName(selectedId)} · ${me.id}</span></li>` : '') +
+    peers.map(p => `<li><i class="dot" style="background:${p.color}"></i><span class="p-name">${esc(p.name)}</span><span class="p-sel">${selName(p.sel)} · ${p.id}</span></li>`).join('');
+}
+
+function onRemoteCollab(kind) {
+  if (kind === 'presence') { renderNodes(); renderPeers(); return; }
+  renderAll();
+  renderPeers();
+  if (selectedId) renderInspector();
+  status('원격 변경 수신 — CRDT 병합');
+}
+
 S = load() || seedDemo();
 $('#project-name').value = S.projectName;
+
+Collab.init(Settings, onRemoteCollab);
+saveSettings(); // siteId 확정 저장
+
 renderAll();
 renderInspector();
-status('TESSERA MVP 준비 완료 · 조각을 모아보세요');
+renderPeers();
+
+/* 설정 모달 */
+function openSettings() {
+  $('#set-vworld').value = Settings.vworldKey || '';
+  $('#set-gemini').value = Settings.geminiKey || '';
+  $('#set-name').value = Settings.name || '';
+  const me = Collab.mySite();
+  $('#set-siteinfo').textContent = me ? `사이트 ID: ${me.id} · 이름: ${me.name} · 색상: ${me.color}` : '';
+  $('#set-colors').innerHTML = Collab.COLORS.map(c =>
+    `<button type="button" data-c="${c}" class="${me && me.color === c ? 'sel' : ''}" style="background:${c}" title="${c}"></button>`).join('');
+  $$('#set-colors button').forEach(b => b.addEventListener('click', () => {
+    $$('#set-colors button').forEach(x => x.classList.remove('sel'));
+    b.classList.add('sel');
+  }));
+  $('#settings-backdrop').hidden = false;
+  $('#settings-modal').hidden = false;
+}
+function closeSettings() {
+  $('#settings-backdrop').hidden = true;
+  $('#settings-modal').hidden = true;
+}
+$('#btn-settings').addEventListener('click', openSettings);
+$('#set-close').addEventListener('click', closeSettings);
+$('#settings-backdrop').addEventListener('click', closeSettings);
+$('#set-save').addEventListener('click', () => {
+  Settings.vworldKey = $('#set-vworld').value.trim();
+  Settings.geminiKey = $('#set-gemini').value.trim();
+  Settings.name = $('#set-name').value.trim() || '설계자';
+  const selC = $('#set-colors button.sel');
+  if (selC) Settings.color = selC.dataset.c;
+  saveSettings();
+  closeSettings();
+  toast('설정 저장 — 일부는 재실행 후 반영됩니다(이름/색상)');
+  location.reload();
+});
+
+status('TESSERA v0.2 준비 완료 · VWorld · 법규 RAG · CRDT 협업');

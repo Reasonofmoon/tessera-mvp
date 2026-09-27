@@ -1,10 +1,12 @@
-# TESSERA (테세라) — MVP
+# TESSERA (테세라) — MVP v0.2 (Phase 2)
 
 > **Every piece finds its place.** 조각이 모여, 설계가 완성된다.
 
 TESSERA는 건축 설계 전 과정을 **노드 그래프**로 조립하는 AI 설계 플랫폼의 MVP입니다.
 CAI CANVAS(카이캔버스) 구조 분석에서 도출된 개선점을 반영해,
 "캔버스 위에 그리는 도구"가 아니라 **"설계 지능의 조각을 조립하는 스튜디오"**로 재설계했습니다.
+
+**v0.2 (Phase 2) 신규:** VWorld 공간정보 실연동 · 법규 RAG(인용+Gemini 요약) · CRDT 협업(멀티탭 실시간 동기화·피어·댓글)
 
 ## 실행 방법
 
@@ -16,6 +18,34 @@ index.html 열기 → 왼쪽 팔레트에서 타일 추가 → 포트 연결 →
 ```
 
 또는: https://reasonofmoon.github.io/tessera-mvp/ (Pages 활성화 시)
+
+## Phase 2 기능 (v0.2)
+
+### 1. VWorld 공간정보 실연동 (`api.js`)
+
+- 주소 → `req/search`(지오코딩) → 연속지적도 `LP_PA_CBND_BUBUN`(필지 폴리곤·PNU·지번)
+  → 용도지역 `LT_C_UQ111/112/113`(uname) 3단 파이프라인
+- 지적 폴리곤으로 대지면적 직접 산출(로컬 ENU 투영, 소필지 오차 <0.1%)
+- 지적 미니맵 SVG 렌더링, `VWORLD LIVE` / `MOCK` 배지로 출처 투명화
+- 전송은 JSONP(공식 샘플 방식, CORS 독립). 키 미설정·실패 시 결정론적 목업 폴백
+- **키 발급:** [vworld.io](https://www.vworld.io) 회원가입 → 개발자센터 → API 키(웹) 발급 후
+  이 사이트 도메인 등록 → ⚙ 설정에 붙여넣기. 키는 브라우저(localStorage)에만 저장
+
+### 2. 법규 RAG (`law.js`)
+
+- 로컬 법령 코퍼스: 국토계획법 §77(건폐율)/§78(용적률) 등 law.go.kr 원문 조문 + 요약 조문
+- BM25 스코어링으로 상황(용도지역·질의)에 맞는 상위 3개 조문 인용
+- 원문/요약 태그로 구분, 세부 한도는 시행령·조례 확인 필요 고지
+- (선택) Gemini API 키 등록 시 근거 접지 AI 요약 생성 — 근거 외 수치 생성 금지 프롬프트
+
+### 3. CRDT 협업 (`collab.js`)
+
+- 제로 의존 CRDT: LWW 레지스터 + 램포트 클록 + 사이트 ID, 추가/제거 세트(톰스톤)
+- BroadcastChannel로 같은 브라우저 탭 간 실시간 동기화
+  (노드 위치·파라미터·생성 결과·엣지·댓글·버전)
+- 신규 피어 핸드셰이크: 접속 시 상태 스냅숏 LWW 병합로 즉시 수렴
+- 피어 presence(이름·색상·선택 타일 하이라이트), 타일별 댓글 스레드
+- 원장(LEDGER)·크레딧은 사이트 로컬 유지 — 협업 데모는 **같은 브라우저 2탭**으로 확인
 
 ## 핵심 개념
 
@@ -51,6 +81,17 @@ GROUND ──→ FLOOR ──→ MASS ──→ LENS
 - 타일별 입력 타입 검증 (FLOOR는 GROUND만 받음 등)
 - `Delete` 키로 선택 타일 삭제
 
+## 파일 구조
+
+```
+index.html   레이아웃·설정 모달·피어 독
+style.css    TESSERA 디자인 시스템 + Phase 2 컴포넌트
+api.js       VWorld JSONP 클라이언트(지오코딩·지적·용도지역)
+law.js       법규 RAG(코퍼스·BM25·Gemini 요약)
+collab.js    CRDT 엔진(LWW·톰스톤·presence·스냅숏 병합)
+app.js       노드 그래프 앱(6 Tile·버전·원장·인스펙터)
+```
+
 ## 기술 노트
 
 - 바닐라 JS + SVG, 의존성 0, 로컬 우선(localStorage 자동 저장)
@@ -58,12 +99,13 @@ GROUND ──→ FLOOR ──→ MASS ──→ LENS
   실서비스에서는 생성 AI 렌더와 규칙 엔진(면적·법규 계산)을 분리하는
   것 이 MVP의 철학을 그대로 확장합니다.
 - 프로젝트 JSON 내보내기/가져오기 지원
+- 외부 키(VWorld·Gemini)는 브라우저 localStorage에만 저장되며 전송되지 않습니다
 
 ## 로드맵
 
-- **Phase 1 (MVP, 이 저장소)**: 노드 그래프 + 6 Tile + 버전/원장
-- **Phase 2**: 실제 공공데이터 API(VWorld) 연동, 법규 RAG, DXF/IFC 출력
-- **Phase 3**: 실시간 협업(CRDT), 팀 좌석, 클라이언트 리뷰 링크
+- **Phase 1 (v0.1)**: 노드 그래프 + 6 Tile + 버전/원장 ✅
+- **Phase 2 (v0.2, 이 저장소)**: VWorld 실연동 + 법규 RAG + CRDT 협업 ✅
+- **Phase 3**: 서버 중계 협업(yjs/websocket), 팀 좌석, 클라이언트 리뷰 링크, DXF/IFC 출력
 - **Phase 4**: Tile 마켓, 멀티모델 오케스트레이터
 
 ## 브랜드

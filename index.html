@@ -24,6 +24,11 @@
       <span class="credit-dot"></span>
       <span id="credit-balance">300</span><span class="credit-unit">c</span>
     </div>
+    <div class="peer-chip" id="peer-chip" title="협업 피어" hidden>
+      <span class="peer-dots" id="peer-dots"></span>
+      <span id="peer-count">0</span><span class="credit-unit">명</span>
+    </div>
+    <button id="btn-settings" class="btn ghost" title="설정 (API 키 · 프로필)">⚙ 설정</button>
     <button id="btn-new" class="btn ghost" title="새 프로젝트">새 프로젝트</button>
     <button id="btn-export" class="btn ghost" title="JSON 내보내기">내보내기</button>
     <button id="btn-import" class="btn ghost" title="JSON 가져오기">가져오기</button>
@@ -92,15 +97,20 @@
     <div class="dock-tabs">
       <button class="dock-tab active" data-tab="versions">VERSIONS <span id="ver-count" class="count">0</span></button>
       <button class="dock-tab" data-tab="ledger">LEDGER <span id="ledger-count" class="count">0</span></button>
+      <button class="dock-tab" data-tab="peers">PEERS <span id="peer-tab-count" class="count">0</span></button>
     </div>
     <div class="dock-body">
       <div id="dock-versions" class="dock-pane active">
-        <p class="dock-hint">모든 생성은 버전으로 기록됩니다. 되돌리기로 파라미터를 복원하세요.</p>
+        <p class="dock-hint">모든 생성은 버전으로 기록되고 피어 간 동기화됩니다. 되돌리기로 파라미터를 복원하세요.</p>
         <ul id="version-list" class="version-list"></ul>
       </div>
       <div id="dock-ledger" class="dock-pane">
-        <p class="dock-hint">실행 전 예상 크레딧, 실행 후 소비 내역이 투명하게 기록됩니다.</p>
+        <p class="dock-hint">실행 전 예상 크레딧, 실행 후 소비 내역이 투명하게 기록됩니다. (원장은 내 계정 기준)</p>
         <ul id="ledger-list" class="ledger-list"></ul>
+      </div>
+      <div id="dock-peers" class="dock-pane">
+        <p class="dock-hint">같은 브라우저에서 이 페이지를 <b>다른 탭</b>으로 열면 CRDT(LWW)로 실시간 동기화됩니다. 노드 이동·파라미터·댓글·버전이 반영됩니다.</p>
+        <ul id="peer-list" class="peer-list"></ul>
       </div>
     </div>
   </section>
@@ -112,6 +122,45 @@
 </footer>
 
 <template id="tpl-credits-preview"></template>
+
+<!-- 설정 모달 -->
+<div id="settings-backdrop" hidden></div>
+<div id="settings-modal" hidden>
+  <h2 class="panel-title">SETTINGS</h2>
+  <div class="set-group">
+    <h3>데이터 연결</h3>
+    <div class="field">
+      <label>VWORLD API 키 <span class="set-note">(공간정보 실연동)</span></label>
+      <input type="password" id="set-vworld" placeholder="www.vworld.io 에서 무료 발급 (웹 API 키)">
+      <p class="set-help">키가 없으면 GROUND 타일은 결정론적 목업으로 동작합니다. 발급 시 이 사이트 도메인을 키에 등록하세요.</p>
+    </div>
+    <div class="field">
+      <label>GEMINI API 키 <span class="set-note">(법규 RAG 요약, 선택)</span></label>
+      <input type="password" id="set-gemini" placeholder="aistudio.google.com 에서 발급 (선택)">
+      <p class="set-help">입력 시 법령 브리핑에 근거 접지 AI 요약이 추가됩니다. 키는 브라우저에만 저장됩니다.</p>
+    </div>
+  </div>
+  <div class="set-group">
+    <h3>협업 프로필</h3>
+    <div class="field">
+      <label>이름</label>
+      <input type="text" id="set-name" placeholder="설계자">
+    </div>
+    <div class="field">
+      <label>색상</label>
+      <div class="color-row" id="set-colors"></div>
+    </div>
+    <p class="set-help" id="set-siteinfo"></p>
+  </div>
+  <div class="run-row">
+    <button class="btn primary" id="set-save">저장</button>
+    <button class="btn ghost" id="set-close">닫기</button>
+  </div>
+</div>
+
+<script src="api.js"></script>
+<script src="law.js"></script>
+<script src="collab.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
