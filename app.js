@@ -80,7 +80,7 @@ const TILES = {
   GROUND: {
     name: 'GROUND', label: '대지 · 법규 브리핑', glyph: '▦', color: 'g-ground',
     credits: 5, accent: '#5F7A5A',
-    defaultParams: () => ({ address: '서울 강남구 논현동 213-12' }),
+    defaultParams: () => ({ address: '서울특별시 중구 세종대로 110' }),
     /* Phase 2: VWorld 실연동(키 있을 때) → 실패 시 결정론적 목업 폴백 */
     async run(params) {
       let live = null, liveErr = null;
@@ -238,12 +238,12 @@ const TILES = {
 
 /* ---------------- state ---------------- */
 
-const LS_KEY = 'tessera-mvp-v1';
+const LS_KEY = 'tessera-mvp-v2'; // v2: 민감 이력 없는 깨끗한 상태로 재시작
 let S = null;
 
 function freshState() {
   return {
-    projectName: '논현동 리뉴얼 스터디',
+    projectName: '새 설계 스터디',
     credits: 300,
     nodes: [],      // {id, tile, x, y, params, out, rev}
     edges: [],      // {id, from, to}
