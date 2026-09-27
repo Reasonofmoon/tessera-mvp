@@ -24,11 +24,11 @@ const Collab = (() => {
   function init(settings, remoteCallback) {
     onRemote = remoteCallback;
     site = {
-      id: (settings.siteId) || ('S' + Math.random().toString(36).slice(2, 6).toUpperCase()),
+      // 사이트 ID는 탭(세션) 단위 — 같은 localStorage를 공유하는 탭들이 서로 다른 피어로 인식
+      id: 'S' + Math.random().toString(36).slice(2, 6).toUpperCase(),
       name: settings.name || '설계자',
       color: settings.color || COLORS[Math.floor(Math.random() * COLORS.length)],
     };
-    settings.siteId = site.id; // 안정적 사이트 ID 저장
     const chan = 'tessera-collab-v2'; // MVP는 단일 프로젝트 채널
     try {
       CH.app = new BroadcastChannel(chan);
